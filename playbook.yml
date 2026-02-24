@@ -1,0 +1,115 @@
+---
+- name: Deploy Task API
+  hosts: servers
+  become: yes
+  vars:
+    docker_image: niangoos/task-api:latest
+    container_name: task-api
+    app_port: 8085
+    mysql_root_password: root
+    mysql_database: taskdb
+
+  tasks:
+    - name: Update apt packages
+      apt:
+        update_cache: yes
+        cache_valid_time: 3600
+
+    - name: Install required packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+          - lsb-release
+        state: present
+
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+
+    - name: Add Docker repository
+      apt_repository:
+        repo: "deb https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        state: present
+
+    - name: Install Docker
+      apt:
+        name:
+          - docker-ce
+          - docker-ce-cli
+          - containerd.io
+        state: present
+
+    - name: Install MySQL server
+      apt:
+        name: mysql-server
+        state: present
+
+    - name: Start and enable Docker
+      systemd:
+        name: docker
+        state: started
+        enabled: yes
+
+    - name: Start and enable MySQL
+      systemd:
+        name: mysql
+        state: started
+        enabled: yes
+
+    - name: Create MySQL database
+      mysql_db:
+        name: "{{ mysql_database }}"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Set MySQL root password
+      mysql_user:
+        name: root
+        password: "{{ mysql_root_password }}"
+        host: "%"
+        priv: "*.*:ALL,GRANT"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Pull Docker image
+      docker_image:
+        name: "{{ docker_image }}"
+        source: pull
+
+    - name: Stop existing container
+      docker_container:
+        name: "{{ container_name }}"
+        state: absent
+
+    - name: Run task-api container
+      docker_container:
+        name: "{{ container_name }}"
+        image: "{{ docker_image }}"
+        state: started
+        restart_policy: always
+        ports:
+          - "{{ app_port }}:{{ app_port }}"
+        env:
+          SPRING_DATASOURCE_URL: "jdbc:mysql://{{ ansible_default_ipv4.address }}:3306/{{ mysql_database }}"
+          SPRING_DATASOURCE_USERNAME: "root"
+          SPRING_DATASOURCE_PASSWORD: "{{ mysql_root_password }}"
+
+    - name: Wait for application to start
+      wait_for:
+        port: "{{ app_port }}"
+        delay: 10
+        timeout: 60
+
+    - name: Verify application is running
+      uri:
+        url: "http://localhost:{{ app_port }}/api/tasks"
+        method: GET
+        status_code: 200
+      register: result
+
+    - name: Display verification result
+      debug:
+        msg: "Application is running. Response status: {{ result.status }}"
